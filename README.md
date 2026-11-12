@@ -122,7 +122,7 @@
 
 ## 绿色免安装包
 
-`dist\pomo-insight-1.1.0-portable.zip` 是可直接分发的绿色版：
+`dist\pomo-insight-1.2.0-portable.zip` 是可直接分发的绿色版：
 
 - 解压后双击「启动番茄洞察.cmd」即可运行，不安装、不写注册表、不需要管理员权限。
 - 包内带 `portable.dat` 标记，程序会把记录和设置写在同目录的 `data\` 下，整个文件夹可以直接拷到 U 盘或另一台电脑继续用。

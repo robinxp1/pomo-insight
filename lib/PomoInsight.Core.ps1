@@ -1,6 +1,6 @@
 ﻿#requires -Version 5.1
 
-$script:PomoInsightVersion = '1.1.0'
+$script:PomoInsightVersion = '1.2.0'
 $script:DefaultSettings = [ordered]@{
     focusMinutes    = 50
     breakMinutes    = 10
