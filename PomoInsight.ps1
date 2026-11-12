@@ -119,6 +119,8 @@ $script:MiniTimerWindow = $null
 $script:MiniTimerVisible = $false
 $script:MiniTimerText = $null
 $script:MiniTimerDot = $null
+$script:MiniTimerHoverTimer = $null
+$script:MiniTimerHovered = $false
 $script:BreakPrivacyAt = $null
 $script:BreakPrivacyHidden = $false
 $script:LastCursorX = $null
@@ -435,6 +437,61 @@ function Set-MiniTimerClickThrough {
     } catch { }
 }
 
+function Test-CursorInsideMiniTimer {
+    if ($null -eq $script:MiniTimerWindow -or -not $script:MiniTimerVisible) { return $false }
+    try {
+        $helper = New-Object System.Windows.Interop.WindowInteropHelper -ArgumentList $script:MiniTimerWindow
+        $handle = $helper.Handle
+        if ($handle -eq [IntPtr]::Zero) { return $false }
+        $rect = New-Object 'PomoInsightNative.NativeCursor+RECT'
+        if (-not [PomoInsightNative.NativeCursor]::GetWindowRect($handle, [ref]$rect)) { return $false }
+        $cursor = Get-CursorPosition
+        if ($null -eq $cursor) { return $false }
+        return ($cursor.X -ge $rect.Left -and $cursor.X -lt $rect.Right -and $cursor.Y -ge $rect.Top -and $cursor.Y -lt $rect.Bottom)
+    } catch {
+        return $false
+    }
+}
+
+function Set-MiniTimerHoverState {
+    param([bool]$Hovered)
+    if ($null -eq $script:MiniTimerWindow) { return }
+    if ($Hovered -eq $script:MiniTimerHovered) { return }
+    $script:MiniTimerHovered = $Hovered
+    $targetOpacity = if ($Hovered) { 0.2 } else { 1.0 }
+    try {
+        $duration = [System.Windows.Duration]::new([TimeSpan]::FromMilliseconds(120))
+        $animation = [System.Windows.Media.Animation.DoubleAnimation]::new([double]$targetOpacity, $duration)
+        $script:MiniTimerWindow.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $animation)
+    } catch {
+        try { $script:MiniTimerWindow.Opacity = $targetOpacity } catch { }
+    }
+}
+
+function Update-MiniTimerHoverState {
+    Set-MiniTimerHoverState -Hovered (Test-CursorInsideMiniTimer)
+}
+
+function Start-MiniTimerHoverTimer {
+    if ($null -eq $script:MiniTimerHoverTimer) {
+        $script:MiniTimerHoverTimer = New-Object System.Windows.Threading.DispatcherTimer
+        $script:MiniTimerHoverTimer.Interval = [TimeSpan]::FromMilliseconds(120)
+        $script:MiniTimerHoverTimer.Add_Tick({ Update-MiniTimerHoverState })
+    }
+    if (-not $script:MiniTimerHoverTimer.IsEnabled) { $script:MiniTimerHoverTimer.Start() }
+}
+
+function Stop-MiniTimerHoverTimer {
+    if ($null -ne $script:MiniTimerHoverTimer -and $script:MiniTimerHoverTimer.IsEnabled) { $script:MiniTimerHoverTimer.Stop() }
+    $script:MiniTimerHovered = $false
+    if ($null -ne $script:MiniTimerWindow) {
+        try {
+            $script:MiniTimerWindow.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $null)
+            $script:MiniTimerWindow.Opacity = 1.0
+        } catch { }
+    }
+}
+
 function Update-MiniTimer {
     param([double]$Seconds, [bool]$InBreak = $false)
     if ($null -eq $script:MiniTimerWindow) { return }
@@ -471,12 +528,14 @@ function Show-MiniTimer {
         $script:MiniTimerWindow.Show()
         $script:MiniTimerVisible = $true
         Set-MiniTimerClickThrough
+        Start-MiniTimerHoverTimer
     }
 }
 
 function Hide-MiniTimer {
     if ($null -ne $script:MiniTimerWindow -and $script:MiniTimerVisible) { $script:MiniTimerWindow.Hide() }
     $script:MiniTimerVisible = $false
+    Stop-MiniTimerHoverTimer
 }
 
 function Set-EdgePeekPlacement {
@@ -1260,8 +1319,10 @@ function Update-TodayCard {
     $now = [DateTimeOffset]::Now
     $today = $now.ToString('yyyy-MM-dd')
     $summary = Get-TodaySummary -Sessions $script:Sessions
+    $gapSummary = Get-TodayGapSummary -Sessions $script:Sessions -ActiveSession $script:ActiveSession -Now $now
     $work = [double]$summary.workSeconds
     $breakSeconds = [double]$summary.breakSeconds
+    $timerGapSeconds = [double]$summary.timerGapSeconds
     $sessions = [int]$summary.sessions
     $breaks = [int]$summary.breakCount
     $longest = 0.0
@@ -1274,13 +1335,16 @@ function Update-TodayCard {
     if ($null -ne $script:ActiveSession -and [string]$script:ActiveSession.localDate -eq $today) {
         $work += Get-SessionWorkSeconds -Session $script:ActiveSession -Now $now
         $breakSeconds += Get-SessionBreakSeconds -Session $script:ActiveSession -Now $now
+        $timerGapSeconds += Get-SessionGapSeconds -Session $script:ActiveSession
         $sessions++
         $breaks += @($script:ActiveSession.breaks).Count
         $activeFocus = Get-LongestFocusSeconds -Session $script:ActiveSession -Now $now
         if ($activeFocus -gt $longest) { $longest = $activeFocus }
     }
+    $nonWorkSeconds = $breakSeconds + $timerGapSeconds + [double]$gapSummary.gapSeconds
     $script:TodayWorkText.Text = Format-TodayDuration -Seconds $work
-    $script:TodayBreakText.Text = Format-TodayDuration -Seconds $breakSeconds
+    $script:TodayBreakText.Text = Format-TodayDuration -Seconds $nonWorkSeconds
+    $script:TodayBreakText.ToolTip = ('段内休息 {0} · 段间空档 {1} · 计时中断 {2}' -f (Format-TodayDuration -Seconds $breakSeconds), (Format-TodayDuration -Seconds ([double]$gapSummary.gapSeconds)), (Format-TodayDuration -Seconds $timerGapSeconds))
     $script:TodaySessionsText.Text = [string]$sessions
     $script:TodayLongestText.Text = Format-TodayDuration -Seconds $longest
     $weekNames = @('周日', '周一', '周二', '周三', '周四', '周五', '周六')
@@ -1420,6 +1484,10 @@ function Refresh-RecentSessions {
         $left.Children.Add($metaText) | Out-Null
         $grid.Children.Add($left) | Out-Null
 
+        $right = New-Object System.Windows.Controls.StackPanel
+        $right.Orientation = [System.Windows.Controls.Orientation]::Horizontal
+        $right.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
+
         $durationText = New-Object System.Windows.Controls.TextBlock
         $durationText.Text = Format-DurationShort -Seconds ([double]$session.workSeconds)
         $durationText.FontFamily = New-Object System.Windows.Media.FontFamily('Consolas')
@@ -1427,12 +1495,200 @@ function Refresh-RecentSessions {
         $durationText.FontWeight = [System.Windows.FontWeights]::SemiBold
         $durationText.Foreground = $script:AccentBrush
         $durationText.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
-        $durationText.Margin = New-Object System.Windows.Thickness(8, 0, 0, 0)
-        [System.Windows.Controls.Grid]::SetColumn($durationText, 1)
-        $grid.Children.Add($durationText) | Out-Null
+        $right.Children.Add($durationText) | Out-Null
+
+        $editButton = New-Object System.Windows.Controls.Button
+        $editButton.Style = $script:Window.FindResource('ChipButton')
+        $editButton.Content = '更改'
+        $editButton.Tag = [string]$session.id
+        $editButton.Height = 24
+        $editButton.Padding = New-Object System.Windows.Thickness(8, 0, 8, 0)
+        $editButton.Margin = New-Object System.Windows.Thickness(8, 0, 0, 0)
+        $editButton.FontSize = 9.5
+        $editButton.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
+        $editButton.ToolTip = '更改这段工作的时间或内容'
+        $editButton.Add_Click({
+            param($sender, $eventArgs)
+            $id = [string]$sender.Tag
+            $target = $null
+            foreach ($item in @($script:Sessions)) {
+                if ($null -ne $item -and [string]$item.id -eq $id) { $target = $item; break }
+            }
+            if ($null -ne $target) { Show-WorkSegmentEditor -Mode 'edit' -Session $target }
+        })
+        $right.Children.Add($editButton) | Out-Null
+
+        [System.Windows.Controls.Grid]::SetColumn($right, 1)
+        $grid.Children.Add($right) | Out-Null
 
         $border.Child = $grid
         $script:RecentSessionsPanel.Children.Add($border) | Out-Null
+    }
+}
+
+function ConvertFrom-ClockText {
+    param([string]$Text, [DateTimeOffset]$Reference)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+    $normalized = $Text.Trim() -replace '：', ':'
+    $match = [regex]::Match($normalized, '^(\d{1,2}):(\d{1,2})$')
+    if (-not $match.Success) { return $null }
+    $hour = [int]$match.Groups[1].Value
+    $minute = [int]$match.Groups[2].Value
+    if ($hour -gt 23 -or $minute -gt 59) { return $null }
+    return [DateTimeOffset]::new($Reference.Year, $Reference.Month, $Reference.Day, $hour, $minute, 0, $Reference.Offset)
+}
+
+function Find-WorkSegmentOverlap {
+    param([DateTimeOffset]$StartedAt, [DateTimeOffset]$EndedAt, [string]$ExcludeId = '')
+    $today = $StartedAt.ToString('yyyy-MM-dd')
+    foreach ($item in @($script:Sessions)) {
+        if ($null -eq $item -or -not [bool]$item.completed) { continue }
+        if ([string]$item.localDate -ne $today) { continue }
+        if (-not [string]::IsNullOrWhiteSpace($ExcludeId) -and [string]$item.id -eq $ExcludeId) { continue }
+        $itemStart = ConvertTo-DateTimeOffsetValue -Value $item.startedAt -UnixMs ([long]$item.startedAtUnixMs)
+        $itemEnd = ConvertTo-DateTimeOffsetValue -Value $item.endedAt -UnixMs ([long]$item.endedAtUnixMs)
+        if ($null -eq $itemStart -or $null -eq $itemEnd) { continue }
+        if ($StartedAt -lt $itemEnd -and $EndedAt -gt $itemStart) { return $item }
+    }
+    if ($null -ne $script:ActiveSession -and [string]$script:ActiveSession.localDate -eq $today) {
+        $activeStart = ConvertTo-DateTimeOffsetValue -Value $script:ActiveSession.startedAt -UnixMs ([long]$script:ActiveSession.startedAtUnixMs)
+        $activeEnd = [DateTimeOffset]::Now
+        if ($null -ne $activeStart -and $StartedAt -lt $activeEnd -and $EndedAt -gt $activeStart) { return $script:ActiveSession }
+    }
+    return $null
+}
+
+function Resolve-EditorClockValue {
+    param([DateTimeOffset]$Parsed, $Original)
+    if ($null -ne $Original) {
+        $originalValue = [DateTimeOffset]$Original
+        if ($Parsed.Hour -eq $originalValue.Hour -and $Parsed.Minute -eq $originalValue.Minute) { return $originalValue }
+    }
+    return $Parsed
+}
+
+function Show-WorkSegmentEditor {
+    param([ValidateSet('edit', 'backfill')][string]$Mode = 'edit', $Session = $null)
+    if ($Mode -eq 'edit' -and $null -eq $Session) { return }
+    $dialog = Load-XamlWindow -RelativePath 'ui\SegmentEditorWindow.xaml'
+    Set-PomoInsightWindowIcon -Window $dialog
+    if ($null -ne $script:Window) { $dialog.Owner = $script:Window }
+
+    $titleText = $dialog.FindName('EditorTitleText')
+    $hintText = $dialog.FindName('EditorHintText')
+    $taskBox = $dialog.FindName('TaskBox')
+    $startBox = $dialog.FindName('StartTimeBox')
+    $endBox = $dialog.FindName('EndTimeBox')
+    $errorText = $dialog.FindName('EditorErrorText')
+    $saveButton = $dialog.FindName('SaveButton')
+    $cancelButton = $dialog.FindName('CancelButton')
+    $closeButton = $dialog.FindName('CloseButton')
+
+    $sessionId = if ($null -ne $Session) { [string]$Session.id } else { '' }
+    $originalStart = $null
+    $originalEnd = $null
+    $now = [DateTimeOffset]::Now
+    $dayStart = [DateTimeOffset]::new($now.Year, $now.Month, $now.Day, 0, 0, 0, $now.Offset)
+    if ($Mode -eq 'edit') {
+        $defaultStart = ConvertTo-DateTimeOffsetValue -Value $Session.startedAt -UnixMs ([long]$Session.startedAtUnixMs)
+        $defaultEnd = ConvertTo-DateTimeOffsetValue -Value $Session.endedAt -UnixMs ([long]$Session.endedAtUnixMs)
+        $originalStart = $defaultStart
+        $originalEnd = $defaultEnd
+        if ($null -eq $defaultStart) { $defaultStart = $now.AddMinutes(-30) }
+        if ($null -eq $defaultEnd) { $defaultEnd = $now }
+        $taskBox.Text = [string]$Session.task
+        $titleText.Text = '更改工作段'
+        $hintText.Text = '调整开始或结束时间，保存后会重新计算工作时长。'
+        $dialog.Title = '更改工作段'
+        $saveButton.Content = '保存更改'
+    } else {
+        $defaultEnd = $now
+        if ($null -ne $script:ActiveSession -and [string]$script:ActiveSession.localDate -eq $now.ToString('yyyy-MM-dd')) {
+            $activeStart = ConvertTo-DateTimeOffsetValue -Value $script:ActiveSession.startedAt -UnixMs ([long]$script:ActiveSession.startedAtUnixMs)
+            if ($null -ne $activeStart -and $activeStart -gt $dayStart.AddMinutes(1) -and $activeStart -le $now) { $defaultEnd = $activeStart }
+        }
+        $defaultStart = $defaultEnd.AddMinutes(-30)
+        if ($defaultStart -lt $dayStart) { $defaultStart = $dayStart }
+        if ($defaultStart -ge $defaultEnd) { $defaultStart = $defaultEnd.AddMinutes(-1) }
+        $titleText.Text = '补录工作段'
+        $hintText.Text = '补录一段今天忘记记录的工作时间。'
+        $dialog.Title = '补录工作段'
+        $saveButton.Content = '保存补录'
+    }
+    $startBox.Text = $defaultStart.ToString('HH:mm')
+    $endBox.Text = $defaultEnd.ToString('HH:mm')
+
+    $dragHandler = {
+        param($sender, $eventArgs)
+        if ($eventArgs.ButtonState -eq [System.Windows.Input.MouseButtonState]::Pressed) {
+            try { $dialog.DragMove() } catch { }
+        }
+    }
+    $titleText.Add_MouseLeftButtonDown($dragHandler)
+    $hintText.Add_MouseLeftButtonDown($dragHandler)
+    $cancelButton.Add_Click({ $dialog.DialogResult = $false })
+    $closeButton.Add_Click({ $dialog.DialogResult = $false })
+    $saveButton.Add_Click({
+        try {
+            $errorText.Visibility = [System.Windows.Visibility]::Collapsed
+            $task = ([string]$taskBox.Text).Trim()
+            if ([string]::IsNullOrWhiteSpace($task)) { throw '请填写工作内容' }
+            $startAt = ConvertFrom-ClockText -Text $startBox.Text -Reference $now
+            if ($null -eq $startAt) { throw '开始时间格式应为 HH:mm' }
+            $endAt = ConvertFrom-ClockText -Text $endBox.Text -Reference $now
+            if ($null -eq $endAt) { throw '结束时间格式应为 HH:mm' }
+            $startAt = Resolve-EditorClockValue -Parsed $startAt -Original $originalStart
+            $endAt = Resolve-EditorClockValue -Parsed $endAt -Original $originalEnd
+            if ($endAt -le $startAt) { throw '结束时间必须晚于开始时间' }
+            if ($endAt -gt [DateTimeOffset]::Now.AddMinutes(1)) { throw '结束时间不能晚于现在' }
+            $overlap = Find-WorkSegmentOverlap -StartedAt $startAt -EndedAt $endAt -ExcludeId $sessionId
+            if ($null -ne $overlap) {
+                throw ('与「{0}」的时间重叠，请调整。' -f [string]$overlap.task)
+            }
+            $dialog.Tag = [pscustomobject]@{ task = $task; startedAt = $startAt; endedAt = $endAt }
+            $dialog.DialogResult = $true
+        } catch {
+            $errorText.Text = $_.Exception.Message
+            $errorText.Visibility = [System.Windows.Visibility]::Visible
+        }
+    })
+    $dialog.Add_ContentRendered({
+        $taskBox.Focus() | Out-Null
+        $taskBox.SelectAll()
+    })
+
+    $confirmed = $dialog.ShowDialog()
+    if ($confirmed -ne $true) { return }
+    $data = $dialog.Tag
+    if ($null -eq $data) { return }
+    try {
+        if ($Mode -eq 'edit') {
+            $target = $null
+            foreach ($item in @($script:Sessions)) {
+                if ($null -ne $item -and [string]$item.id -eq $sessionId) { $target = $item; break }
+            }
+            if ($null -eq $target) { throw '这条工作段已不存在，请重新打开。' }
+            Set-PomoInsightSessionSchedule -Session $target -Task ([string]$data.task) -StartedAt ([DateTimeOffset]$data.startedAt) -EndedAt ([DateTimeOffset]$data.endedAt) -Reason 'edited' | Out-Null
+            Save-PomoInsightSessions -Root $script:DataRoot -Sessions @($script:Sessions)
+            $script:Sessions = @(Get-PomoInsightSessions -Root $script:DataRoot)
+            Update-StaticUi
+            Update-LiveUi
+            Show-TransientStatus -Text '工作段已更新' -Good $true
+            Write-PomoInsightLog -Root $script:DataRoot -Message ('Session edited: ' + $sessionId)
+        } else {
+            $newSession = New-PomoInsightSession -Task ([string]$data.task) -StartedAt ([DateTimeOffset]$data.startedAt)
+            Complete-PomoInsightSession -Session $newSession -EndedAt ([DateTimeOffset]$data.endedAt) -Reason 'backfill' | Out-Null
+            $script:Sessions = @($script:Sessions) + $newSession
+            Save-PomoInsightSessions -Root $script:DataRoot -Sessions @($script:Sessions)
+            $script:Sessions = @(Get-PomoInsightSessions -Root $script:DataRoot)
+            Update-StaticUi
+            Update-LiveUi
+            Show-TransientStatus -Text '工作段已补录' -Good $true
+            Write-PomoInsightLog -Root $script:DataRoot -Message ('Session backfilled: ' + [string]$newSession.id)
+        }
+    } catch {
+        Write-PomoInsightLog -Root $script:DataRoot -Message ('Session editor save failed: ' + $_.Exception.Message)
+        [System.Windows.MessageBox]::Show(('保存失败：' + $_.Exception.Message), '番茄洞察', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error) | Out-Null
     }
 }
 
@@ -1960,6 +2216,7 @@ function Initialize-Controls {
     $script:TodayBreakText = $w.FindName('TodayBreakText')
     $script:TodaySessionsText = $w.FindName('TodaySessionsText')
     $script:TodayLongestText = $w.FindName('TodayLongestText')
+    $script:BackfillButton = $w.FindName('BackfillButton')
     $script:RecentSessionsPanel = $w.FindName('RecentSessionsPanel')
     $script:EmptySessionsText = $w.FindName('EmptySessionsText')
     $script:FocusMinutesBox = $w.FindName('FocusMinutesBox')
@@ -2046,6 +2303,7 @@ function Wire-Events {
     $script:StopButton.Add_Click({ Stop-Work })
     $script:ExpandedTakeBreakButton.Add_Click({ if ($script:InBreak) { End-Break } else { Start-Break } })
     $script:ExpandedStopButton.Add_Click({ Stop-Work })
+    $script:BackfillButton.Add_Click({ Show-WorkSegmentEditor -Mode 'backfill' })
 
     $script:ExpandButton.Add_Click({ Hide-RecentTasksPopup; Set-Expanded $true })
     if ($null -ne $script:CompactExpandButton) { $script:CompactExpandButton.Add_Click({ Hide-RecentTasksPopup; Set-Expanded $true }) }
@@ -2165,6 +2423,17 @@ function Start-UiSmokeTest {
         try {
             switch ($script:SmokeStep) {
                 0 {
+                    $clockRef = [DateTimeOffset]::new(2026, 11, 12, 9, 0, 0, [DateTimeOffset]::Now.Offset)
+                    $clockValue = ConvertFrom-ClockText -Text '9：05' -Reference $clockRef
+                    if ($null -eq $clockValue -or $clockValue.Hour -ne 9 -or $clockValue.Minute -ne 5) { throw 'clock parser failed' }
+                    if ($null -ne (ConvertFrom-ClockText -Text '24:00' -Reference $clockRef)) { throw 'clock parser accepted invalid hour' }
+                    $preciseStart = [DateTimeOffset]::new(2026, 11, 12, 9, 28, 30, [DateTimeOffset]::Now.Offset)
+                    $resolvedStart = Resolve-EditorClockValue -Parsed (ConvertFrom-ClockText -Text '09:28' -Reference $clockRef) -Original $preciseStart
+                    if ($resolvedStart.Second -ne 30) { throw 'editor did not preserve original seconds' }
+                    $previousEnd = [DateTimeOffset]::new(2026, 11, 12, 9, 28, 10, [DateTimeOffset]::Now.Offset)
+                    if ($resolvedStart -le $previousEnd) { throw 'editor seconds preservation still overlaps previous session' }
+                    $changedStart = ConvertFrom-ClockText -Text '09:29' -Reference $clockRef
+                    if ((Resolve-EditorClockValue -Parsed $changedStart -Original $preciseStart).Second -ne 0) { throw 'editor should reset seconds when minute changes' }
                     Show-RecentTasksPopup
                     if ($script:RecentTasksPopup.IsOpen) { throw 'empty history popup should stay closed' }
                     if ($null -eq $script:TrayIcon) { throw 'tray icon missing' }
@@ -2190,6 +2459,10 @@ function Start-UiSmokeTest {
                     Hide-MainWindowToEdge
                     if (-not $script:EdgeHidden) { throw 'top edge did not hide' }
                     if (-not $script:MiniTimerVisible) { throw 'top hide did not show mini timer' }
+                    Set-MiniTimerHoverState -Hovered $true
+                    if (-not $script:MiniTimerHovered) { throw 'mini timer hover fade state missing' }
+                    Set-MiniTimerHoverState -Hovered $false
+                    if ($script:MiniTimerHovered) { throw 'mini timer hover state did not reset' }
                     if ([Math]::Abs([double]$script:MiniTimerWindow.Top - [Math]::Round($topArea.Top)) -gt 1) { throw 'top mini timer position wrong' }
                     $expectedMiniLeft = [Math]::Round($topArea.Left + (($topArea.Width - $script:MiniTimerWindow.Width) / 2.0))
                     if ([Math]::Abs([double]$script:MiniTimerWindow.Left - $expectedMiniLeft) -gt 1) { throw 'top mini timer horizontal position wrong' }
@@ -2312,6 +2585,18 @@ function Start-UiSmokeTest {
                 }
                 4 {
                     Stop-Work -Reason 'test'
+                    if ($null -eq $script:BackfillButton -or [string]$script:BackfillButton.Content -ne '＋ 补录') { throw 'backfill entry missing' }
+                    if ([string]$script:TodayBreakText.ToolTip -notmatch '段间空档') { throw 'non-work tooltip missing' }
+                    if ($script:RecentSessionsPanel.Children.Count -lt 1) { throw 'recent session row missing' }
+                    $editEntryFound = $false
+                    $rowGrid = $script:RecentSessionsPanel.Children[0].Child
+                    foreach ($child in $rowGrid.Children) {
+                        if ($child -isnot [System.Windows.Controls.StackPanel]) { continue }
+                        foreach ($inner in $child.Children) {
+                            if ($inner -is [System.Windows.Controls.Button] -and [string]$inner.Content -eq '更改') { $editEntryFound = $true }
+                        }
+                    }
+                    if (-not $editEntryFound) { throw 'edit entry missing' }
                     $script:DockedEdge = 'right'
                     $script:EdgeHidden = $false
                     Hide-MainWindowToEdge
@@ -2386,7 +2671,7 @@ function Start-UiSmokeTest {
                         }
                     }
                     $marker = Join-Path $script:DataRoot 'uismoke.ok'
-                    [System.IO.File]::WriteAllText($marker, ('sessions=' + $sessions.Count + '; reminders=' + $session.reminderCount + '; snoozes=' + $session.snoozeCount + '; breaks=' + $session.breakCount + '; history=' + $historyCount + '; privacy=ok; idle=ok; tray=ok; top=ok; preset=ok; multi=' + $multi + '; export=' + $path), [System.Text.Encoding]::UTF8)
+                    [System.IO.File]::WriteAllText($marker, ('sessions=' + $sessions.Count + '; reminders=' + $session.reminderCount + '; snoozes=' + $session.snoozeCount + '; breaks=' + $session.breakCount + '; history=' + $historyCount + '; edit=ok; hover=ok; privacy=ok; idle=ok; tray=ok; top=ok; preset=ok; multi=' + $multi + '; export=' + $path), [System.Text.Encoding]::UTF8)
                     $script:SmokeTimer.Stop()
                     $script:Exiting = $true
                     $script:Window.Close()

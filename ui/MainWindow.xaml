@@ -385,7 +385,7 @@
                                     </StackPanel>
                                     <StackPanel>
                                         <TextBlock x:Name="TodayBreakText" Text="0m" FontFamily="Consolas" FontSize="17" FontWeight="SemiBold" Foreground="{StaticResource TextMain}"/>
-                                        <TextBlock Text="休息" FontSize="9" Foreground="{StaticResource TextMuted}" Margin="0,2,0,0"/>
+                                        <TextBlock Text="非工作" FontSize="9" Foreground="{StaticResource TextMuted}" Margin="0,2,0,0"/>
                                     </StackPanel>
                                     <StackPanel>
                                         <TextBlock x:Name="TodaySessionsText" Text="0" FontFamily="Consolas" FontSize="17" FontWeight="SemiBold" Foreground="{StaticResource TextMain}"/>
@@ -422,7 +422,14 @@
                                 </StackPanel>
                             </Border>
 
-                            <TextBlock Text="今日工作段" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource TextMuted}" Margin="0,16,0,7"/>
+                            <Grid Margin="0,16,0,7">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="今日工作段" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource TextMuted}" VerticalAlignment="Center"/>
+                                <Button x:Name="BackfillButton" Grid.Column="1" Style="{StaticResource ChipButton}" Content="＋ 补录" Height="24" Padding="9,0" Margin="0" ToolTip="补录一段今天忘记记录的工作时间"/>
+                            </Grid>
                             <StackPanel x:Name="RecentSessionsPanel"/>
                             <TextBlock x:Name="EmptySessionsText" Text="今天还没有工作记录。在上方输入工作内容后开始。" FontSize="11" Foreground="{StaticResource TextMuted}" TextWrapping="Wrap" Margin="0,4,0,0"/>
                         </StackPanel>

@@ -315,6 +315,21 @@ function Get-LongestFocusSeconds {
     if ($max -gt $workLimit) { $max = $workLimit }
     return $max
 }
+function Update-PomoInsightSessionMetrics {
+    param([Parameter(Mandatory = $true)]$Session, [DateTimeOffset]$Now = [DateTimeOffset]::Now)
+    $wall = Get-SessionWallSeconds -Session $Session -Now $Now
+    $brk = Get-SessionBreakSeconds -Session $Session -Now $Now
+    $gap = Get-SessionGapSeconds -Session $Session
+    $work = [Math]::Max(0.0, $wall - $brk - $gap)
+    $Session.wallSeconds = [int][Math]::Round($wall)
+    $Session.breakSeconds = [int][Math]::Round($brk)
+    $Session.workSeconds = [int][Math]::Round($work)
+    $Session.durationMinutes = [Math]::Round($work / 60.0, 1)
+    $Session.breakCount = @($Session.breaks).Count
+    $Session.longestFocusSeconds = [int][Math]::Round((Get-LongestFocusSeconds -Session $Session -Now $Now))
+    return $Session
+}
+
 function Complete-PomoInsightSession {
     param([Parameter(Mandatory = $true)]$Session, [Parameter(Mandatory = $true)][DateTimeOffset]$EndedAt, [string]$Reason = 'manual')
     $breaks = @($Session.breaks)
@@ -333,19 +348,82 @@ function Complete-PomoInsightSession {
     $Session.endedAtUnixMs = (Get-EpochMs -Value $EndedAt)
     $Session.endLocalDate = $EndedAt.ToString('yyyy-MM-dd')
     $Session.endHour = [int]$EndedAt.Hour
-    $wall = Get-SessionWallSeconds -Session $Session -Now $EndedAt
-    $brk = Get-SessionBreakSeconds -Session $Session -Now $EndedAt
-    $gap = Get-SessionGapSeconds -Session $Session
-    $work = [Math]::Max(0.0, $wall - $brk - $gap)
-    $Session.wallSeconds = [int][Math]::Round($wall)
-    $Session.breakSeconds = [int][Math]::Round($brk)
-    $Session.workSeconds = [int][Math]::Round($work)
-    $Session.durationMinutes = [Math]::Round($work / 60.0, 1)
-    $Session.breakCount = @($Session.breaks).Count
-    $Session.longestFocusSeconds = [int][Math]::Round((Get-LongestFocusSeconds -Session $Session -Now $EndedAt))
+    Update-PomoInsightSessionMetrics -Session $Session -Now $EndedAt | Out-Null
     $Session.endReason = $Reason
     $Session.completed = $true
     Add-SessionEvent -Session $Session -Type 'end' -At $EndedAt -Note $Reason | Out-Null
+    return $Session
+}
+
+function Set-PomoInsightSessionSchedule {
+    param(
+        [Parameter(Mandatory = $true)]$Session,
+        [Parameter(Mandatory = $true)][string]$Task,
+        [Parameter(Mandatory = $true)][DateTimeOffset]$StartedAt,
+        [Parameter(Mandatory = $true)][DateTimeOffset]$EndedAt,
+        [string]$Reason = 'edited'
+    )
+    if ($EndedAt -le $StartedAt) { throw '结束时间必须晚于开始时间' }
+    $taskText = $Task.Trim()
+    if ([string]::IsNullOrWhiteSpace($taskText)) { throw '请填写工作内容' }
+    $Session.task = $taskText
+    $Session.startedAt = $StartedAt.ToString('o')
+    $Session.startedAtUnixMs = (Get-EpochMs -Value $StartedAt)
+    $Session.localDate = $StartedAt.ToString('yyyy-MM-dd')
+    $Session.dayOfWeek = $StartedAt.DayOfWeek.ToString()
+    $Session.startHour = [int]$StartedAt.Hour
+    $Session.endedAt = $EndedAt.ToString('o')
+    $Session.endedAtUnixMs = (Get-EpochMs -Value $EndedAt)
+    $Session.endLocalDate = $EndedAt.ToString('yyyy-MM-dd')
+    $Session.endHour = [int]$EndedAt.Hour
+
+    $breaks = New-Object System.Collections.Generic.List[object]
+    foreach ($br in @($Session.breaks)) {
+        if ($null -eq $br) { continue }
+        $bStart = ConvertTo-DateTimeOffsetValue -Value $br.startedAt -UnixMs ([long]$br.startedAtUnixMs)
+        if ($null -eq $bStart) { continue }
+        $bEnd = ConvertTo-DateTimeOffsetValue -Value $br.endedAt -UnixMs ([long]$br.endedAtUnixMs)
+        if ($null -eq $bEnd) { $bEnd = $EndedAt }
+        if ($bEnd -le $StartedAt -or $bStart -ge $EndedAt) { continue }
+        if ($bStart -lt $StartedAt) { $bStart = $StartedAt }
+        if ($bEnd -gt $EndedAt) { $bEnd = $EndedAt }
+        $br.startedAt = $bStart.ToString('o')
+        $br.startedAtUnixMs = (Get-EpochMs -Value $bStart)
+        $br.endedAt = $bEnd.ToString('o')
+        $br.endedAtUnixMs = (Get-EpochMs -Value $bEnd)
+        $br.durationSeconds = [int][Math]::Round(($bEnd - $bStart).TotalSeconds)
+        $br.completed = $true
+        $breaks.Add($br)
+    }
+    $Session.breaks = $breaks.ToArray()
+
+    $gaps = New-Object System.Collections.Generic.List[object]
+    $gapSeconds = 0.0
+    foreach ($gapItem in @($Session.timerGaps)) {
+        if ($null -eq $gapItem) { continue }
+        $gStart = ConvertTo-DateTimeOffsetValue -Value $gapItem.startedAt -UnixMs ([long]$gapItem.startedAtUnixMs)
+        if ($null -eq $gStart) { continue }
+        $gEnd = ConvertTo-DateTimeOffsetValue -Value $gapItem.endedAt -UnixMs ([long]$gapItem.endedAtUnixMs)
+        if ($null -eq $gEnd) { continue }
+        if ($gEnd -le $StartedAt -or $gStart -ge $EndedAt) { continue }
+        if ($gStart -lt $StartedAt) { $gStart = $StartedAt }
+        if ($gEnd -gt $EndedAt) { $gEnd = $EndedAt }
+        $gapItem.startedAt = $gStart.ToString('o')
+        $gapItem.startedAtUnixMs = (Get-EpochMs -Value $gStart)
+        $gapItem.endedAt = $gEnd.ToString('o')
+        $gapItem.endedAtUnixMs = (Get-EpochMs -Value $gEnd)
+        $gapItem.durationSeconds = [int][Math]::Round(($gEnd - $gStart).TotalSeconds)
+        $gapSeconds += ($gEnd - $gStart).TotalSeconds
+        $gaps.Add($gapItem)
+    }
+    $Session.timerGaps = $gaps.ToArray()
+    $Session.timerGapCount = $gaps.Count
+    $Session.timerGapSeconds = [int][Math]::Round($gapSeconds)
+
+    Update-PomoInsightSessionMetrics -Session $Session -Now $EndedAt | Out-Null
+    $Session.completed = $true
+    $Session.endReason = $Reason
+    Add-SessionEvent -Session $Session -Type 'edit' -At ([DateTimeOffset]::Now) -Note $Reason | Out-Null
     return $Session
 }
 
@@ -400,13 +478,51 @@ function Get-TodaySummary {
     $items = @($Sessions | Where-Object { $null -ne $_ -and [string]$_.localDate -eq $today })
     $work = 0.0
     $brk = 0.0
+    $gap = 0.0
     foreach ($item in $items) {
         $work += [double]$item.workSeconds
         $brk += [double]$item.breakSeconds
+        $gap += Get-SessionGapSeconds -Session $item
     }
     $breakSum = ($items | ForEach-Object { [int]$_.breakCount } | Measure-Object -Sum).Sum
     if ($null -eq $breakSum) { $breakSum = 0 }
-    return [pscustomobject]@{ date = $today; sessions = $items.Count; workSeconds = [int][Math]::Round($work); breakSeconds = [int][Math]::Round($brk); breakCount = [int]$breakSum }
+    $gapCount = ($items | ForEach-Object { [int]$_.timerGapCount } | Measure-Object -Sum).Sum
+    if ($null -eq $gapCount) { $gapCount = 0 }
+    return [pscustomobject]@{ date = $today; sessions = $items.Count; workSeconds = [int][Math]::Round($work); breakSeconds = [int][Math]::Round($brk); breakCount = [int]$breakSum; timerGapSeconds = [int][Math]::Round($gap); timerGapCount = [int]$gapCount }
+}
+
+function Get-TodayGapSummary {
+    param([AllowEmptyCollection()][object[]]$Sessions = @(), $ActiveSession = $null, [DateTimeOffset]$Now = [DateTimeOffset]::Now)
+    $today = $Now.ToString('yyyy-MM-dd')
+    $intervals = New-Object System.Collections.Generic.List[object]
+    foreach ($item in @($Sessions)) {
+        if ($null -eq $item -or -not [bool]$item.completed) { continue }
+        if ([string]$item.localDate -ne $today) { continue }
+        $start = ConvertTo-DateTimeOffsetValue -Value $item.startedAt -UnixMs ([long]$item.startedAtUnixMs)
+        $end = ConvertTo-DateTimeOffsetValue -Value $item.endedAt -UnixMs ([long]$item.endedAtUnixMs)
+        if ($null -eq $start -or $null -eq $end -or $end -le $start) { continue }
+        $intervals.Add([pscustomobject]@{ start = $start; end = $end; task = [string]$item.task })
+    }
+    if ($null -ne $ActiveSession -and [string]$ActiveSession.localDate -eq $today) {
+        $start = ConvertTo-DateTimeOffsetValue -Value $ActiveSession.startedAt -UnixMs ([long]$ActiveSession.startedAtUnixMs)
+        if ($null -ne $start -and $Now -gt $start) {
+            $intervals.Add([pscustomobject]@{ start = $start; end = $Now; task = [string]$ActiveSession.task })
+        }
+    }
+    $gapSeconds = 0.0
+    $gapCount = 0
+    if ($intervals.Count -gt 1) {
+        $cursor = $null
+        foreach ($item in @($intervals | Sort-Object { $_.start })) {
+            if ($null -eq $cursor) { $cursor = $item.end; continue }
+            if ($item.start -gt $cursor) {
+                $gapSeconds += ($item.start - $cursor).TotalSeconds
+                $gapCount++
+            }
+            if ($item.end -gt $cursor) { $cursor = $item.end }
+        }
+    }
+    return [pscustomobject]@{ date = $today; gapSeconds = [int][Math]::Round($gapSeconds); gapCount = $gapCount }
 }
 
 function Get-PomoInsightSummary {

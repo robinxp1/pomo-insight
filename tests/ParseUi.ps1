@@ -1,6 +1,6 @@
 ﻿Add-Type -AssemblyName PresentationFramework
 $root = Split-Path -Parent $PSScriptRoot
-$files = @('ui\MainWindow.xaml', 'ui\ReminderWindow.xaml', 'ui\MiniTimerWindow.xaml')
+$files = @('ui\MainWindow.xaml', 'ui\ReminderWindow.xaml', 'ui\MiniTimerWindow.xaml', 'ui\SegmentEditorWindow.xaml')
 $failed = $false
 foreach ($rel in $files) {
     $path = Join-Path $root $rel

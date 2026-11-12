@@ -120,6 +120,39 @@ if ($gapCsv -match 'timerGapMinutes') { Write-Output 'PASS csv timer gap column'
 $legacy = [pscustomobject]@{ startedAt = $gapStart.ToString('o'); startedAtUnixMs = (Get-EpochMs -Value $gapStart) }
 Assert-Equal (Get-SessionGapSeconds -Session $legacy) 0 'legacy session gap fallback'
 
+$timelineDay = [DateTimeOffset]::new([DateTimeOffset]::Now.Year, [DateTimeOffset]::Now.Month, [DateTimeOffset]::Now.Day, 0, 0, 0, [DateTimeOffset]::Now.Offset)
+$timelineNow = $timelineDay.AddHours(12)
+$timelineA = New-PomoInsightSession -Task '时间轴 A' -StartedAt $timelineDay.AddHours(9)
+$timelineA = Complete-PomoInsightSession -Session $timelineA -EndedAt $timelineDay.AddHours(9).AddMinutes(30) -Reason 'manual'
+$timelineB = New-PomoInsightSession -Task '时间轴 B' -StartedAt $timelineDay.AddHours(10)
+$timelineB = Complete-PomoInsightSession -Session $timelineB -EndedAt $timelineDay.AddHours(10).AddMinutes(30) -Reason 'manual'
+$timelineActive = New-PomoInsightSession -Task '时间轴进行中' -StartedAt $timelineDay.AddHours(11)
+$gapSummary = Get-TodayGapSummary -Sessions @($timelineA, $timelineB) -ActiveSession $timelineActive -Now $timelineNow
+Assert-Equal $gapSummary.gapSeconds 3600 'timeline gap seconds'
+Assert-Equal $gapSummary.gapCount 2 'timeline gap count'
+
+$timelineA = Set-PomoInsightSessionSchedule -Session $timelineA -Task '时间轴 A2' -StartedAt $timelineDay.AddHours(9) -EndedAt $timelineDay.AddHours(9).AddMinutes(45) -Reason 'edited'
+Assert-Equal $timelineA.workSeconds 2700 'edited work seconds'
+Assert-Equal $timelineA.durationMinutes 45 'edited duration minutes'
+Assert-Equal $timelineA.task '时间轴 A2' 'edited task'
+Assert-Equal $timelineA.endReason 'edited' 'edited reason'
+
+$clampBreakStart = $timelineDay.AddHours(10).AddMinutes(20)
+$clampBreakEnd = $timelineDay.AddHours(10).AddMinutes(25)
+$timelineB.breaks = @([pscustomobject]@{
+    startedAt = $clampBreakStart.ToString('o')
+    startedAtUnixMs = (Get-EpochMs -Value $clampBreakStart)
+    endedAt = $clampBreakEnd.ToString('o')
+    endedAtUnixMs = (Get-EpochMs -Value $clampBreakEnd)
+    durationSeconds = 300
+    completed = $true
+    source = 'test'
+})
+$timelineB = Set-PomoInsightSessionSchedule -Session $timelineB -Task '时间轴 B' -StartedAt $timelineDay.AddHours(10) -EndedAt $timelineDay.AddHours(10).AddMinutes(22) -Reason 'edited'
+Assert-Equal $timelineB.wallSeconds 1320 'edited wall seconds'
+Assert-Equal $timelineB.breakSeconds 120 'edited break clamped'
+Assert-Equal $timelineB.workSeconds 1200 'edited work with clamped break'
+
 $settings = Get-PomoInsightSettings -Root $testRoot
 $settings.focusMinutes = 60
 $settings.breakMinutes = 12
