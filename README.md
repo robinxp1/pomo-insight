@@ -1,5 +1,7 @@
 # 番茄洞察 · 工作节奏追踪器
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-63E6BE.svg)](LICENSE)
+
 > pomo-insight —— 一个安静待在屏幕边缘的番茄工作法 / 工作节奏记录器。
 
 一个可吸附在屏幕边缘、贴边自动隐藏的极简开发工时记录器。原生 Windows PowerShell + WPF 实现，**不打包 exe、不联网、不写入 Excel**，数据只保存在本机。
@@ -166,3 +168,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\UiSmoke.ps1
 ```
 
 `UiSmoke.ps1` 会实际启动界面，跑一遍“开始 → 定时提醒 → 延后 → 休息 → 继续 → 结束 → 导出”，并检查托盘、顶部不隐藏、节律预设和多显示器吸附，然后自动退出。
+
+## 许可证
+
+MIT License，详见 [LICENSE](LICENSE)。
