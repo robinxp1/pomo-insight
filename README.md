@@ -4,13 +4,13 @@
 
 > pomo-insight —— 一个安静待在屏幕边缘的番茄工作法 / 工作节奏记录器。
 
-一个可吸附在屏幕边缘、贴边自动隐藏的极简开发工时记录器。原生 Windows PowerShell + WPF 实现，**不打包 exe、不联网、不写入 Excel**，数据只保存在本机。
+一个可吸附在屏幕边缘、贴边自动隐藏的极简开发工时记录器。原生 Windows PowerShell + WPF 实现，**主程序是脚本、不联网、不写入 Excel**，数据只保存在本机。
 
 适合记录“今天在电脑前真正推进了哪些开发工作”，并把记录导出成 JSON / CSV，交给 AI 分析工作节奏和习惯。
 
 ## 快速开始
 
-1. 双击 `启动番茄洞察.cmd`。
+1. 双击 `番茄洞察.exe`（带应用图标；遇到策略拦截时改用 `启动番茄洞察.cmd`）。
 2. 首屏只有一个输入框、播放键和右侧箭头。输入工作内容后点播放键或按 Enter 开始。
 3. 点击输入框会展开近期工作建议；继续输入会自动过滤，点击条目即可填入。重复点击输入框不会让下拉反复开关。
 4. 工作时点“结束并保存”完成记录；需要休息时点“现在休息”。
@@ -122,9 +122,10 @@
 
 ## 绿色免安装包
 
-`dist\pomo-insight-1.2.0-portable.zip` 是可直接分发的绿色版：
+`dist\pomo-insight-1.2.1-portable.zip` 是可直接分发的绿色版：
 
-- 解压后双击「启动番茄洞察.cmd」即可运行，不安装、不写注册表、不需要管理员权限。
+- 解压后双击「番茄洞察.exe」即可运行，不安装、不写注册表、不需要管理员权限；exe 只是几 KB 的启动器，主程序仍是 PowerShell 脚本。
+- 首次启动会自动在桌面创建「番茄洞察」快捷方式（带应用图标），之后不会重复创建；快捷方式记录的是当前解压位置，移动文件夹后删掉重建即可。
 - 包内带 `portable.dat` 标记，程序会把记录和设置写在同目录的 `data\` 下，整个文件夹可以直接拷到 U 盘或另一台电脑继续用。
 - 卸载就是关掉程序后删掉文件夹，不残留数据。
 - 需要重新打包（版本号取自 `lib\PomoInsight.Core.ps1`，会自动命名）：
@@ -134,6 +135,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\Build-Portable.ps1
 ```
 
 图标资源由 `tools\New-AppIcon.ps1` 生成，输出 `assets\pomo-insight.ico`（16/24/32/48/64/128/256 多尺寸）。
+启动器由 `tools\Launcher.cs` 在打包时用系统自带 csc 编译，图标直接嵌入 exe。
 
 ## 文件结构
 
@@ -145,7 +147,9 @@ ui\ReminderWindow.xaml    右下角提醒界面
 ui\MiniTimerWindow.xaml   贴边隐藏时的顶部迷你计时条
 assets\pomo-insight.ico      应用图标（启动项、窗口）
 启动番茄洞察.cmd         便携启动器
+番茄洞察.exe             打包生成的带图标启动器
 tools\Build-Portable.ps1  打绿色免安装包
+tools\Launcher.cs         启动器源码
 tools\New-AppIcon.ps1     重新生成应用图标
 dist\                     打包输出目录
 tests\                    语法、核心数据和运行时冒烟测试

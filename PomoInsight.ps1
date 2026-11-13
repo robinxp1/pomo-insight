@@ -2414,6 +2414,59 @@ function Set-PomoInsightWindowIcon {
     } catch { }
 }
 
+function New-PomoInsightShortcut {
+    param(
+        [Parameter(Mandatory = $true)][string]$LinkPath,
+        [Parameter(Mandatory = $true)][string]$TargetPath,
+        [string]$WorkingDirectory = '',
+        [string]$IconPath = '',
+        [string]$Description = '番茄洞察 · 工作节奏追踪器'
+    )
+    $folder = Split-Path -Parent $LinkPath
+    if (-not [string]::IsNullOrWhiteSpace($folder) -and -not [System.IO.Directory]::Exists($folder)) {
+        [void][System.IO.Directory]::CreateDirectory($folder)
+    }
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($LinkPath)
+    $shortcut.TargetPath = $TargetPath
+    if (-not [string]::IsNullOrWhiteSpace($WorkingDirectory)) { $shortcut.WorkingDirectory = $WorkingDirectory }
+    if (-not [string]::IsNullOrWhiteSpace($IconPath) -and (Test-Path -LiteralPath $IconPath)) {
+        $shortcut.IconLocation = ($IconPath + ',0')
+    }
+    $shortcut.Description = $Description
+    $shortcut.Save()
+    return (Test-Path -LiteralPath $LinkPath)
+}
+
+function Get-PortableLauncherPath {
+    foreach ($name in @('番茄洞察.exe', '启动番茄洞察.cmd')) {
+        $candidate = Join-Path $script:AppRoot $name
+        if (Test-Path -LiteralPath $candidate) { return $candidate }
+    }
+    return $null
+}
+
+function Initialize-PortableDesktopShortcut {
+    if (-not $script:PortableMode) { return }
+    $marker = Join-Path $script:DataRoot 'desktop-shortcut.done'
+    if (Test-Path -LiteralPath $marker) { return }
+    $launcher = Get-PortableLauncherPath
+    if ($null -eq $launcher) { return }
+    $desktop = $env:POMO_INSIGHT_DESKTOP_DIR
+    if ([string]::IsNullOrWhiteSpace($desktop)) { $desktop = [Environment]::GetFolderPath('Desktop') }
+    if ([string]::IsNullOrWhiteSpace($desktop)) { return }
+    $linkPath = Join-Path $desktop '番茄洞察.lnk'
+    try {
+        $created = New-PomoInsightShortcut -LinkPath $linkPath -TargetPath $launcher -WorkingDirectory $script:AppRoot -IconPath (Join-Path $script:AppRoot 'assets\pomo-insight.ico')
+        if ($created) {
+            Set-Content -LiteralPath $marker -Value ([DateTimeOffset]::Now.ToString('yyyy-MM-dd HH:mm:ss')) -Encoding UTF8
+            Write-PomoInsightLog -Root $script:DataRoot -Message ('Desktop shortcut created: ' + $linkPath)
+        }
+    } catch {
+        Write-PomoInsightLog -Root $script:DataRoot -Message ('Desktop shortcut failed: ' + $_.Exception.Message)
+    }
+}
+
 function Start-UiSmokeTest {
     $script:UiSmokeFailed = $false
     $script:SmokeStep = 0
@@ -2439,6 +2492,25 @@ function Start-UiSmokeTest {
                     if ($null -eq $script:TrayIcon) { throw 'tray icon missing' }
                     if ($script:TrayMenu.Items.Count -ne 2) { throw 'tray menu must have exactly two items' }
                     if (($script:TrayMenu.Items[0].Text -ne '设置') -or ($script:TrayMenu.Items[1].Text -ne '关闭程序')) { throw 'tray menu labels wrong' }
+                    $deskTest = Join-Path $script:DataRoot 'desktop-test'
+                    $lnkTest = Join-Path $deskTest '番茄洞察.lnk'
+                    $oldPortable = $script:PortableMode
+                    $oldDeskEnv = $env:POMO_INSIGHT_DESKTOP_DIR
+                    $script:PortableMode = $true
+                    $env:POMO_INSIGHT_DESKTOP_DIR = $deskTest
+                    Initialize-PortableDesktopShortcut
+                    if (-not (Test-Path -LiteralPath $lnkTest)) { throw 'portable desktop shortcut missing' }
+                    $shellCheck = New-Object -ComObject WScript.Shell
+                    $shortcutCheck = $shellCheck.CreateShortcut($lnkTest)
+                    $expectedTarget = Join-Path $script:AppRoot '启动番茄洞察.cmd'
+                    if (-not [string]::Equals($shortcutCheck.TargetPath, $expectedTarget, [StringComparison]::OrdinalIgnoreCase)) { throw 'shortcut target wrong' }
+                    if ($shortcutCheck.IconLocation -notlike '*pomo-insight.ico*') { throw 'shortcut icon missing' }
+                    if (-not (Test-Path -LiteralPath (Join-Path $script:DataRoot 'desktop-shortcut.done'))) { throw 'shortcut marker missing' }
+                    $script:PortableMode = $oldPortable
+                    $env:POMO_INSIGHT_DESKTOP_DIR = $oldDeskEnv
+                    Remove-Item -LiteralPath $lnkTest -Force
+                    Remove-Item -LiteralPath (Join-Path $script:DataRoot 'desktop-shortcut.done') -Force
+                    [System.IO.Directory]::Delete($deskTest, $true)
                     $script:DockedEdge = 'right'
                     $script:EdgeHidden = $false
                     Hide-MainWindowToEdge
@@ -2712,6 +2784,7 @@ $script:Window.Add_Loaded({
     Position-MainWindow -Initial
     Position-ReminderWindow
     Initialize-TrayIcon
+    Initialize-PortableDesktopShortcut
     Update-StaticUi
     Update-LiveUi
     $script:UiTimer.Start()
